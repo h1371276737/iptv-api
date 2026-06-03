@@ -1,61 +1,29 @@
-name: IPTV Source Update & Deploy
+name: IPTV Source Update
 
-# ============================================================
-# 触发条件配置
-# ============================================================
 on:
-  # 手动触发（点击 Actions 页面的 Run workflow 按钮）
+  # 手动触发
   workflow_dispatch:
-    inputs:
-      update_type:
-        description: '更新模式'
-        required: true
-        default: 'full'
-        type: choice
-        options:
-          - full      # 完整更新（采集+测速+生成）
-          - fast      # 快速更新（跳过部分测速）
 
-  # 定时触发（可选：自动按计划执行）
-  # ⚠️ 注意：免费版 GitHub Actions 有 2000 分钟/月限制
-  # schedule:
-  #   - cron: '0 2 * * *'    # 每天凌晨 2 点执行
-  #   - cron: '0 2,14 * * *' # 每天 2 点和 14 点各执行一次
-
-# ============================================================
-# 权限配置
-# ============================================================
 permissions:
-  contents: write      # 允许写入仓库内容（提交更新后的结果文件）
-  pages: write         # 允许部署到 GitHub Pages（如果启用）
-  id-token: write      # 用于 Cloudflare Pages 部署鉴权
+  contents: write
 
-# ============================================================
-# 工作流任务
-# ============================================================
 jobs:
-  # ---------------------------
-  # 任务 1：更新 IPTV 直播源
-  # ---------------------------
-  update-source:
+  update:
     runs-on: ubuntu-latest
-    timeout-minutes: 90     # 单次运行最长 90 分钟
+    timeout-minutes: 90
 
     steps:
-      # 1. 检出代码
-      - name: 📦 Checkout Repository
+      - name: 📦 Checkout
         uses: actions/checkout@v4
         with:
-          ref: master         # 确保检出正确的分支
+          ref: master
 
-      # 2. 设置 Python 环境
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
-      # 3. 缓存 pipenv 依赖（加速后续运行）
-      - name: 💾 Cache Dependencies
+      - name: 💾 Cache pipenv
         uses: actions/cache@v4
         with:
           path: ~/.local/share/virtualenvs
@@ -63,105 +31,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pipenv-
 
-      # 4. 安装 pipenv 及项目依赖
       - name: 📥 Install Dependencies
         run: |
           pip install pipenv
           pipenv install --deploy --dev
 
-      # 5. 运行 IPTV 源更新主程序
-      - name: 🔄 Update IPTV Sources
-        run: |
-          pipenv run dev
+      - name: 🔄 Update Sources
+        run: pipenv run dev
         env:
-          # 环境变量可以覆盖 config.ini 中的配置
-          # 例如：强制 IPv4 模式
-          # IPV_TYPE: ipv4
-          # 设置时区
           TZ: Asia/Shanghai
 
-      # 6. 验证更新结果
       - name: ✅ Verify Output
         run: |
-          echo "=== 输出目录内容 ==="
           ls -la output/
-          echo ""
-          echo "=== 结果文件统计 ==="
-          echo "文件大小:"
-          du -h output/*.txt output/*.m3u 2>/dev/null || true
-          echo ""
-          echo "频道数量统计:"
-          grep -c ',#' output/result.txt 2>/dev/null || echo "无法统计"
+          du -h output/* 2>/dev/null || true
 
-      # 7. 提交更新后的结果文件到仓库
       - name: 📤 Commit Results
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-
-          # 添加所有输出文件
           git add output/
           git add config/subscribe_disabled.txt 2>/dev/null || true
-
-          # 检查是否有变更
-          if git diff --staged --quiet; then
-            echo "🟡 没有新的变更需要提交"
-          else
-            git commit -m "🤖 Auto-update IPTV sources [$(date '+%Y-%m-%d %H:%M')]"
+          if ! git diff --staged --quiet; then
+            git commit -m "🤖 Auto-update [$(date '+%Y-%m-%d %H:%M')]"
             git push
-            echo "🟢 成功提交更新结果"
+          else
+            echo "🟡 No changes"
           fi
-
-  # ---------------------------
-  # 任务 2：部署展示页到 Cloudflare Pages
-  # 任务 1 成功后才执行
-  # ---------------------------
-  deploy-page:
-    needs: update-source
-    runs-on: ubuntu-latest
-
-    steps:
-      # 1. 检出代码（带上刚提交的结果）
-      - name: 📦 Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          ref: master
-
-      # 2. 部署到 Cloudflare Pages
-      # 方案 A：使用 Cloudflare Wrangler Action（推荐）
-      - name: 🚀 Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy ./ --project-name=iptv-source-page
-
-      # 方案 B：如果不用 Wrangler Action，可以用 GitHub Actions 的 pages 功能
-      # （二选一即可，上面和下面选一种方案）
-
-# ============================================================
-# 可选：使用 GitHub Pages 作为备用展示页（二选一）
-# 如果你不想用 Cloudflare Pages，取消下面注释
-# ============================================================
-#  deploy-github-pages:
-#    needs: update-source
-#    runs-on: ubuntu-latest
-#    permissions:
-#      contents: read
-#      pages: write
-#      id-token: write
-#    environment:
-#      name: github-pages
-#      url: ${{ steps.deployment.outputs.page_url }}
-#    steps:
-#      - name: Checkout
-#        uses: actions/checkout@v4
-#      - name: Setup Pages
-#        uses: actions/configure-pages@v5
-#      - name: Upload artifact
-#        uses: actions/upload-pages-artifact@v3
-#        with:
-#          path: './'
-#      - name: Deploy to GitHub Pages
-#        id: deployment
-#        uses: actions/deploy-pages@v4
